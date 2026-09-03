@@ -53,6 +53,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     val pendingCount by App.pendingCount.observeAsState(0)
     val message by App.lastMessage.observeAsState()
     val successFlash by App.successFlash.observeAsState(false)
+    val uploadFailure by App.uploadFailure.observeAsState()
     val uploading = vm.uploadingPath.value != null
     val tags by App.tags.observeAsState(emptyList())
 
@@ -250,6 +251,58 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                 )
             }
         }
+    }
+
+    // Uploading overlay: dim + spinner card, non-clickable (blocks input).
+    if (uploading) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(0.55f)
+                .background(MaterialTheme.colorScheme.scrim)
+                .clickable(enabled = false, onClick = {}),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp))
+                    .padding(horizontal = 40.dp, vertical = 28.dp)
+            ) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(44.dp),
+                    strokeWidth = 4.dp
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Uploading to Speakr…",
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+    }
+
+    // Failsafe alert when an upload fails permanently (or first failure).
+    uploadFailure?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { App.uploadFailure.postValue(null) },
+            title = { Text("Upload failed") },
+            text = { Text(msg) },
+            confirmButton = {
+                TextButton(onClick = { App.uploadFailure.postValue(null) }) {
+                    Text("OK")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    App.uploadFailure.postValue(null)
+                    UploadWorker.kick()
+                }) {
+                    Text("Retry now")
+                }
+            }
+        )
     }
 }
 

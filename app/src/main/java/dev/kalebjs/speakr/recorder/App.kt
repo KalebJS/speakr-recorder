@@ -1,8 +1,11 @@
 package dev.kalebjs.speakr.recorder
 
 import android.app.Application
+import android.content.ContentValues
 import android.content.Context
 import android.media.MediaRecorder
+import android.os.Environment
+import android.provider.MediaStore
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -41,6 +44,8 @@ object App {
     val pendingCount = MutableLiveData(0)
     val lastMessage = MutableLiveData<String?>(null)
     val successFlash = MutableLiveData(false)
+    /** Failsafe alert: shown once when an upload permanently fails. */
+    val uploadFailure = MutableLiveData<String?>(null)
     val tags = MutableLiveData<List<Tag>>(emptyList())
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -160,6 +165,54 @@ object App {
     fun onAmplitude(peak: Int) = _amplitude.postValue(peak)
 
     fun onLevel(rms: Double) = _level.postValue(rms)
+
+    /**
+     * Failsafe: copy a recording into the public Downloads folder (MediaStore,
+     * no storage permission needed on API 29+). Returns the display name.
+     */
+    fun saveRecordingToDownloads(path: String): String? {
+        return try {
+            val src = File(path)
+            if (!src.exists()) return null
+            val resolver = context.contentResolver
+            var name = src.name
+            // Avoid silent collisions: if the name already exists in Downloads,
+            // prefix with a timestamp instead of letting the system rename it.
+            val existing = resolver.query(
+                MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+                arrayOf(name),
+                null
+            )?.use { it.count > 0 } == true
+            if (existing) {
+                val dot = name.lastIndexOf('.')
+                name = if (dot > 0) {
+                    "speakr-${System.currentTimeMillis()}" + name.substring(dot)
+                } else {
+                    "speakr-${System.currentTimeMillis()}.m4a"
+                }
+            }
+            val cv = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, name)
+                put(MediaStore.MediaColumns.MIME_TYPE, "audio/mp4")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv)
+                ?: return null
+            resolver.openOutputStream(uri)?.use { out ->
+                src.inputStream().use { it.copyTo(out) }
+            }
+            val done = ContentValues().apply {
+                put(MediaStore.MediaColumns.IS_PENDING, 0)
+            }
+            resolver.update(uri, done, null, null)
+            name
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     fun onRecordingStarted(path: String) {
         recordingFilePath.postValue(path)

@@ -83,7 +83,17 @@ class MainViewModel : ViewModel() {
                     File(path).delete()
                     App.successFlash.postValue(true)
                 } catch (e: Exception) {
-                    App.toast("Upload failed — will retry automatically")
+                    // Failsafe: copy the recording to public Downloads and
+                    // alert the user; the retry queue keeps trying anyway.
+                    val savedName = App.saveRecordingToDownloads(path)
+                    val retryMsg = if (savedName != null) {
+                        "Upload failed — a copy is saved in Downloads as \"$savedName\". It will still retry automatically."
+                    } else {
+                        "Upload failed — will retry automatically"
+                    }
+                    withContext(Dispatchers.Main) {
+                        App.uploadFailure.postValue(retryMsg)
+                    }
                     UploadWorker.kick()
                 }
             } finally {

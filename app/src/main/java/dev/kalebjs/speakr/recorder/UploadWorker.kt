@@ -56,7 +56,14 @@ object UploadWorker {
                     lastAttemptAt = now
                 )
                 if (updated.attempts >= 10) {
-                    App.toast("Upload failed 10x — kept on device")
+                    val savedName = App.saveRecordingToDownloads(item.path)
+                    App.uploadFailure.postValue(
+                        if (savedName != null) {
+                            "Upload failed after 10 attempts — a copy is saved in Downloads as \"$savedName\"."
+                        } else {
+                            "Upload failed after 10 attempts — kept on device"
+                        }
+                    )
                 } else {
                     App.updateQueueEntry(updated)
                 }
