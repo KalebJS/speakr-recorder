@@ -65,10 +65,18 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     }
 
     var drawerOpen by remember { mutableStateOf(false) }
+    var submitAfterStop by remember { mutableStateOf<List<Long>?>(null) }
 
     // Open the submission drawer automatically when a recording finishes.
     LaunchedEffect(recording, pendingPath) {
         if (!recording && pendingPath != null) drawerOpen = true
+        // One-tap stop-and-send from the paused state.
+        if (!recording && pendingPath != null && submitAfterStop != null) {
+            val path = pendingPath
+            val ids = submitAfterStop
+            submitAfterStop = null
+            if (path != null && ids != null) vm.submit(path, ids)
+        }
     }
 
     // Auto-dismiss the success flash.
@@ -142,6 +150,8 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                     }
                 },
                 onStopForSend = {
+                    // From paused, "stop to send" finishes the session and the
+                    // drawer's Send becomes enabled.
                     ContextCompat.startForegroundService(
                         App.context,
                         Intent(App.context, RecorderService::class.java)
@@ -166,17 +176,39 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
             ) {
                 SubmissionDrawer(
                     recording = recording,
+                    paused = paused,
                     uploading = uploading,
                     path = pendingPath,
                     tags = tags,
                     elapsed = elapsed,
                     onSubmit = { ids ->
-                        pendingPath?.let { p -> vm.submit(p, ids) }
-                        // keep drawer open; it closes itself when upload finishes
+                        pendingPath?.let { p ->
+                            if (!recording) {
+                                vm.submit(p, ids)
+                            } else {
+                                // Paused: finalize the session, then auto-send
+                                // once the file is closed.
+                                submitAfterStop = ids
+                                ContextCompat.startForegroundService(
+                                    App.context,
+                                    Intent(App.context, RecorderService::class.java)
+                                        .setAction(RecorderService.ACTION_STOP)
+                                )
+                            }
+                        }
                     },
                     onDiscard = {
                         pendingPath?.let { p ->
-                            vm.discard(p)
+                            if (recording) {
+                                // Paused: abort the session and drop the file.
+                                ContextCompat.startForegroundService(
+                                    App.context,
+                                    Intent(App.context, RecorderService::class.java)
+                                        .setAction(RecorderService.ACTION_ABORT)
+                                )
+                            } else {
+                                vm.discard(p)
+                            }
                             drawerOpen = false
                         }
                     },
@@ -411,6 +443,7 @@ private fun RecordButton(recording: Boolean, paused: Boolean, onClick: () -> Uni
 @Composable
 private fun SubmissionDrawer(
     recording: Boolean,
+    paused: Boolean,
     uploading: Boolean,
     path: String?,
     tags: List<Tag>,
@@ -425,7 +458,7 @@ private fun SubmissionDrawer(
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            if (recording) {
+            if (recording && !paused) {
                 Box(
                     Modifier
                         .size(10.dp)
@@ -434,14 +467,19 @@ private fun SubmissionDrawer(
                 Spacer(Modifier.width(10.dp))
             }
             Text(
-                if (recording) "Recording… ${formatElapsed(elapsed)}" else "Ready to send",
+                when {
+                    recording && !paused -> "Recording… ${formatElapsed(elapsed)}"
+                    recording && paused -> "Paused — ${formatElapsed(elapsed)}"
+                    else -> "Ready to send"
+                },
                 style = MaterialTheme.typography.titleMedium
             )
         }
 
         Text(
             when {
-                recording -> "Recording continues in the background. Stop it to enable sending."
+                recording && !paused -> "Recording continues in the background. Pause or stop it to enable sending."
+                recording && paused -> "Recording is paused. Sending will finish the session and upload."
                 uploading -> "Uploading…"
                 else -> "Pick one or more tags (optional), then send to your Speakr."
             },
@@ -459,7 +497,7 @@ private fun SubmissionDrawer(
 
         Button(
             onClick = { onSubmit(selected.toList()) },
-            enabled = !recording && path != null && !uploading,
+            enabled = path != null && !uploading && (!recording || paused),
             modifier = Modifier.fillMaxWidth().height(52.dp)
         ) {
             if (uploading) {
@@ -471,12 +509,18 @@ private fun SubmissionDrawer(
                 Spacer(Modifier.width(12.dp))
                 Text("Uploading…")
             } else {
-                Text(if (recording) "Stop recording to send" else "Send to Speakr")
+                Text(
+                    when {
+                        recording && !paused -> "Stop recording to send"
+                        recording && paused -> "Finish & send to Speakr"
+                        else -> "Send to Speakr"
+                    }
+                )
             }
         }
         OutlinedButton(
             onClick = onDiscard,
-            enabled = !recording && path != null && !uploading,
+            enabled = path != null && !uploading && (!recording || paused),
             modifier = Modifier.fillMaxWidth().height(48.dp)
         ) {
             Text("Discard recording", color = MaterialTheme.colorScheme.error)
