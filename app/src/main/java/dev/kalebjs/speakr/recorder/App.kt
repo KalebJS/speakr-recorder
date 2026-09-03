@@ -35,6 +35,8 @@ object App {
     val elapsed: LiveData<Long> = _elapsed
     private val _amplitude = MutableLiveData(0)
     val amplitude: LiveData<Int> = _amplitude
+    private val _level = MutableLiveData(0.0)
+    val level: LiveData<Double> = _level
     val recordingFilePath = MutableLiveData<String?>(null)
     val pendingCount = MutableLiveData(0)
     val lastMessage = MutableLiveData<String?>(null)
@@ -152,6 +154,8 @@ object App {
     fun onTick(seconds: Long) = _elapsed.postValue(seconds)
 
     fun onAmplitude(peak: Int) = _amplitude.postValue(peak)
+
+    fun onLevel(rms: Double) = _level.postValue(rms)
 
     fun onRecordingStarted(path: String) {
         recordingFilePath.postValue(path)

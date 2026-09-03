@@ -48,6 +48,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     val paused by App.paused.observeAsState(false)
     val elapsed by App.elapsed.observeAsState(0L)
     val amplitude by App.amplitude.observeAsState(0)
+    val level by App.level.observeAsState(0.0)
     val pendingPath by App.recordingFilePath.observeAsState()
     val pendingCount by App.pendingCount.observeAsState(0)
     val message by App.lastMessage.observeAsState()
@@ -78,18 +79,20 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
         }
     }
 
-    // Live level history for the waveform. Append EVERY posted sample
+    // Live level history for the waveform. Uses true PCM RMS (AudioRecord
+    // pipeline) posted by the capture thread — appended on EVERY sample.
     val levels = remember { mutableStateListOf<Float>() }
     DisposableEffect(recording, paused) {
-        val observer = androidx.lifecycle.Observer<Int> { amp ->
+        val observer = androidx.lifecycle.Observer<Double> { lvl ->
             if (recording && !paused) {
-                val norm = sqrt((amp / 32767f).coerceIn(0f, 1f)).coerceAtLeast(0.06f)
-                levels.add(norm)
+                // Perceptual boost: sqrt makes quiet speech visible.
+                val norm = sqrt(lvl.coerceIn(0.0, 1.0)).coerceAtLeast(0.06)
+                levels.add(norm.toFloat())
                 while (levels.size > 48) levels.removeAt(0)
             }
         }
-        App.amplitude.observeForever(observer)
-        onDispose { App.amplitude.removeObserver(observer) }
+        App.level.observeForever(observer)
+        onDispose { App.level.removeObserver(observer) }
     }
     // Clear bars only when the recording is fully consumed (new session).
     LaunchedEffect(recording) {
@@ -268,13 +271,6 @@ private fun MainLayout(
                     text = formatElapsed(elapsed),
                     style = MaterialTheme.typography.displayMedium,
                     fontFamily = FontFamily.Monospace
-                )
-            }
-            if (paused) {
-                Text(
-                    "Paused",
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Spacer(Modifier.height(32.dp))
