@@ -102,9 +102,14 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
         App.level.observeForever(observer)
         onDispose { App.level.removeObserver(observer) }
     }
-    // Clear bars only when the recording is fully consumed (new session).
-    LaunchedEffect(recording) {
-        if (!recording && pendingPath == null) levels.clear()
+    // Clear bars + clock when the recording is fully consumed (sent/discarded).
+    LaunchedEffect(recording, pendingPath, successFlash) {
+        if (!recording && pendingPath == null) {
+            levels.clear()
+            App.onTick(0)
+            App.onLevel(0.0)
+            App.onAmplitude(0)
+        }
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {

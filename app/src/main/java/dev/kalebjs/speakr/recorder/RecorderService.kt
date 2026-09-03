@@ -147,6 +147,8 @@ class RecorderService : Service() {
             audioRecord?.startRecording()
             state = State.RECORDING
             App.paused.postValue(false)
+            elapsedSeconds = 0L
+            App.resetClock()
             App.onRecordingStarted(file.absolutePath)
             startTickTimer()
             captureThread = Thread { captureLoop() }.apply { start() }

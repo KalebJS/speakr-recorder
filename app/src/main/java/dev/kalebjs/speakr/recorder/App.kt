@@ -153,6 +153,10 @@ object App {
 
     fun onTick(seconds: Long) = _elapsed.postValue(seconds)
 
+    fun resetClock() {
+        _elapsed.postValue(0)
+    }
+
     fun onAmplitude(peak: Int) = _amplitude.postValue(peak)
 
     fun onLevel(rms: Double) = _level.postValue(rms)
