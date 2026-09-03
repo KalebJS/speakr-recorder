@@ -111,6 +111,11 @@ class RecorderService : Service() {
                 override fun run() {
                     elapsedSeconds++
                     App.onTick(elapsedSeconds)
+                    // True capture level (0..32767); doubles as "still alive" proof.
+                    try {
+                        App.onAmplitude(recorder?.maxAmplitude ?: 0)
+                    } catch (_: Exception) {
+                    }
                 }
             }, 1000, 1000)
         }

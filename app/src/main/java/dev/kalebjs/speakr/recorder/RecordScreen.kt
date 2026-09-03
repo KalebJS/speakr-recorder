@@ -2,12 +2,9 @@ package dev.kalebjs.speakr.recorder
 
 import android.content.Intent
 import androidx.compose.animation.animateColorAsState
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,25 +12,31 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.livedata.observeAsState
 import kotlin.math.min
+import kotlin.math.sqrt
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording: () -> Unit) {
     val recording by App.recording.observeAsState(false)
     val elapsed by App.elapsed.observeAsState(0L)
+    val amplitude by App.amplitude.observeAsState(0)
     val pendingPath by App.recordingFilePath.observeAsState()
     val pendingCount by App.pendingCount.observeAsState(0)
     val message by App.lastMessage.observeAsState()
@@ -47,53 +50,101 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
         }
     }
 
+    var drawerOpen by remember { mutableStateOf(false) }
+
+    // Open the submission drawer automatically when a recording finishes.
+    LaunchedEffect(recording, pendingPath) {
+        if (!recording && pendingPath != null) drawerOpen = true
+    }
+
+    // Live level history for the waveform (one bar per second, latest on the right).
+    val levels = remember { mutableStateListOf<Float>() }
+    LaunchedEffect(amplitude, recording) {
+        if (recording) {
+            val norm = sqrt((amplitude / 32767f).coerceIn(0f, 1f)).coerceAtLeast(0.04f)
+            levels.add(norm)
+            if (levels.size > 48) levels.removeAt(0)
+        } else {
+            levels.clear()
+        }
+    }
+
     Surface(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.fillMaxSize()) {
-            val path: String? = pendingPath
-            when {
-                path != null -> TagPickScreen(
-                    path = path,
-                    tags = tags,
-                    onSubmit = { ids -> vm.submit(path, ids) },
-                    onDiscard = { vm.discard(path) },
-                    onRetake = {
-                        // user wants to record again without sending
-                        vm.discard(path)
+            MainLayout(
+                recording = recording,
+                elapsed = elapsed,
+                levels = levels,
+                pendingPath = pendingPath,
+                pendingCount = pendingCount,
+                tags = tags,
+                onStartRecording = {
+                    if (pendingPath != null) {
+                        // A finished recording is still awaiting a decision.
+                        App.toast("Send or discard the previous recording first")
+                        drawerOpen = true
+                    } else {
+                        onStartRecording()
                     }
-                )
-                else -> IdleOrRecording(
-                    recording = recording,
-                    elapsed = elapsed,
-                    pendingCount = pendingCount,
-                    tags = tags,
-                    onStartRecording = onStartRecording,
-                    onStopRecording = {
-                        ContextCompat.startForegroundService(
-                            App.context,
-                            Intent(App.context, RecorderService::class.java)
-                                .setAction(RecorderService.ACTION_STOP)
-                        )
-                    },
-                    onOpenSettings = onOpenSettings
-                )
-            }
+                },
+                onStopRecording = {
+                    ContextCompat.startForegroundService(
+                        App.context,
+                        Intent(App.context, RecorderService::class.java)
+                            .setAction(RecorderService.ACTION_STOP)
+                    )
+                },
+                onOpenSettings = onOpenSettings,
+                onOpenDrawer = { drawerOpen = true }
+            )
+
             SnackbarHost(
                 hostState = snackbar,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
             )
         }
+
+        if (drawerOpen) {
+            val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            ModalBottomSheet(
+                onDismissRequest = { drawerOpen = false },
+                sheetState = sheetState
+            ) {
+                SubmissionDrawer(
+                    recording = recording,
+                    path = pendingPath,
+                    tags = tags,
+                    elapsed = elapsed,
+                    onSubmit = { ids ->
+                        pendingPath?.let { p ->
+                            vm.submit(p, ids)
+                            drawerOpen = false
+                        }
+                    },
+                    onDiscard = {
+                        pendingPath?.let { p ->
+                            vm.discard(p)
+                            drawerOpen = false
+                        }
+                    }
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun IdleOrRecording(
+private fun MainLayout(
     recording: Boolean,
     elapsed: Long,
+    levels: List<Float>,
+    pendingPath: String?,
     pendingCount: Int,
     tags: List<Tag>,
     onStartRecording: () -> Unit,
     onStopRecording: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenDrawer: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -119,17 +170,29 @@ private fun IdleOrRecording(
             }
         }
 
-        // Center: timer + button
+        // Center: timer + waveform + button
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
             modifier = Modifier.weight(1f)
         ) {
-            Text(
-                text = formatElapsed(elapsed),
-                style = MaterialTheme.typography.displayMedium,
-                fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (recording) {
+                    Box(
+                        Modifier
+                            .size(10.dp)
+                            .background(MaterialTheme.colorScheme.error, CircleShape)
+                    )
+                    Spacer(Modifier.width(10.dp))
+                }
+                Text(
+                    text = formatElapsed(elapsed),
+                    style = MaterialTheme.typography.displayMedium,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+            Spacer(Modifier.height(32.dp))
+            LiveWaveform(levels = levels, active = recording)
             Spacer(Modifier.height(48.dp))
             RecordButton(
                 recording = recording,
@@ -137,21 +200,84 @@ private fun IdleOrRecording(
             )
             Spacer(Modifier.height(24.dp))
             Text(
-                text = if (recording) "Tap to stop" else "Tap to record",
+                text = when {
+                    recording -> "Recording — tap to stop"
+                    pendingPath != null -> "Review in the drawer below"
+                    else -> "Tap to record"
+                },
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
 
-        // Bottom: tag legend (informational)
-        if (tags.isNotEmpty()) {
-            Text(
-                "${tags.size} tags from your Speakr",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+        // Bottom: drawer handle while recording (or a finished review pending)
+        if (recording || pendingPath != null) {
+            DrawerHandle(onClick = onOpenDrawer)
         } else {
             Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+/** Minimal pill handle with an up arrow that opens the submission drawer. */
+@Composable
+private fun DrawerHandle(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text("▲", fontSize = 16.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(
+                if (App.recording.value == true) "Tags & send" else "Review recording",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+/** Real amplitude history rendered as slim rounded bars; idle = flat dotted line. */
+@Composable
+private fun LiveWaveform(levels: List<Float>, active: Boolean) {
+    val barColor = if (active) MaterialTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.surfaceVariant
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(56.dp)
+    ) {
+        val n = 48
+        val gap = 3.dp.toPx()
+        val barW = (size.width - gap * (n - 1)) / n
+        if (!active && levels.isEmpty()) {
+            // idle placeholder: faint dots along the center line
+            val cy = size.height / 2
+            repeat(n) { i ->
+                val x = i * (barW + gap)
+                drawRoundRect(
+                    color = barColor,
+                    topLeft = Offset(x, cy - 1.dp.toPx()),
+                    size = Size(barW, 2.dp.toPx()),
+                    cornerRadius = CornerRadius(2.dp.toPx())
+                )
+            }
+        } else {
+            val start = (n - levels.size).coerceAtLeast(0)
+            levels.forEachIndexed { i, v ->
+                val slot = start + i
+                val x = slot * (barW + gap)
+                val h = (size.height * v).coerceAtLeast(4.dp.toPx())
+                drawRoundRect(
+                    color = barColor,
+                    topLeft = Offset(x, (size.height - h) / 2),
+                    size = Size(barW, h),
+                    cornerRadius = CornerRadius(barW / 2)
+                )
+            }
         }
     }
 }
@@ -191,43 +317,43 @@ private fun RecordButton(recording: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** Pulsing outer ring while recording. */
 @Composable
-fun PulsingRing(recording: Boolean) {
-    if (!recording) return
-    val pulse by rememberInfiniteTransition(label = "pulse").animateFloat(
-        initialValue = 1f, targetValue = 1.25f,
-        animationSpec = infiniteRepeatable(tween(800), RepeatMode.Reverse), label = "pulse"
-    )
-    Box(
-        Modifier
-            .size((110 * pulse).dp)
-            .background(Color.Transparent, CircleShape)
-            .border(2.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f), CircleShape)
-    )
-}
-
-@Composable
-private fun TagPickScreen(
-    path: String,
+private fun SubmissionDrawer(
+    recording: Boolean,
+    path: String?,
     tags: List<Tag>,
+    elapsed: Long,
     onSubmit: (List<Long>) -> Unit,
-    onDiscard: () -> Unit,
-    onRetake: () -> Unit
+    onDiscard: () -> Unit
 ) {
     val selected = remember { mutableStateListOf<Long>() }
     Column(
-        modifier = Modifier.fillMaxSize().padding(24.dp),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 24.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
-        Text("Ready to send", style = MaterialTheme.typography.headlineSmall)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (recording) {
+                Box(
+                    Modifier
+                        .size(10.dp)
+                        .background(MaterialTheme.colorScheme.error, CircleShape)
+                )
+                Spacer(Modifier.width(10.dp))
+            }
+            Text(
+                if (recording) "Recording… ${formatElapsed(elapsed)}" else "Ready to send",
+                style = MaterialTheme.typography.titleMedium
+            )
+        }
+
         Text(
-            "Pick one or more tags (optional), then send to your Speakr.",
+            if (recording) "Recording continues in the background. Stop it to enable sending."
+            else "Pick one or more tags (optional), then send to your Speakr.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
 
-        FlowRowOfTags(
+        TagChipGrid(
             tags = tags,
             selected = selected,
             onToggle = { tag ->
@@ -235,16 +361,16 @@ private fun TagPickScreen(
             }
         )
 
-        Spacer(Modifier.weight(1f))
-
         Button(
             onClick = { onSubmit(selected.toList()) },
+            enabled = !recording && path != null,
             modifier = Modifier.fillMaxWidth().height(52.dp)
         ) {
-            Text("Send to Speakr")
+            Text(if (recording) "Stop recording to send" else "Send to Speakr")
         }
         OutlinedButton(
             onClick = onDiscard,
+            enabled = !recording && path != null,
             modifier = Modifier.fillMaxWidth().height(48.dp)
         ) {
             Text("Discard recording", color = MaterialTheme.colorScheme.error)
@@ -253,16 +379,17 @@ private fun TagPickScreen(
 }
 
 @Composable
-private fun FlowRowOfTags(
+private fun TagChipGrid(
     tags: List<Tag>,
     selected: MutableList<Long>,
     onToggle: (Tag) -> Unit
 ) {
     if (tags.isEmpty()) {
         Text(
-            "No tags available — they will sync when your server is reachable. You can still send without a tag.",
+            "No tags available — they sync when your server is reachable. You can still send without a tag.",
             style = MaterialTheme.typography.bodySmall
         )
+        return
     }
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
         tags.chunked(3).forEach { rowTags ->
@@ -290,9 +417,7 @@ private fun FlowRowOfTags(
 private fun parseTagColor(hex: String?): Color? {
     if (hex == null || !hex.startsWith("#") || hex.length < 7) return null
     return try {
-        Color(
-            android.graphics.Color.parseColor(hex)
-        )
+        Color(android.graphics.Color.parseColor(hex))
     } catch (_: Exception) {
         null
     }

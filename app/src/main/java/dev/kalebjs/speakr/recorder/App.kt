@@ -2,6 +2,7 @@ package dev.kalebjs.speakr.recorder
 
 import android.app.Application
 import android.content.Context
+import android.media.MediaRecorder
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.security.crypto.EncryptedSharedPreferences
@@ -31,6 +32,8 @@ object App {
     val recording = MutableLiveData(false)
     private val _elapsed = MutableLiveData(0L)
     val elapsed: LiveData<Long> = _elapsed
+    private val _amplitude = MutableLiveData(0)
+    val amplitude: LiveData<Int> = _amplitude
     val recordingFilePath = MutableLiveData<String?>(null)
     val pendingCount = MutableLiveData(0)
     val lastMessage = MutableLiveData<String?>(null)
@@ -135,6 +138,8 @@ object App {
     fun toast(msg: String) = lastMessage.postValue(msg)
 
     fun onTick(seconds: Long) = _elapsed.postValue(seconds)
+
+    fun onAmplitude(peak: Int) = _amplitude.postValue(peak)
 
     fun onRecordingStarted(path: String) {
         recordingFilePath.postValue(path)

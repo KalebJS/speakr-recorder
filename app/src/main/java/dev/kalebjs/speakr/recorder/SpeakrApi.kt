@@ -1,13 +1,14 @@
 package dev.kalebjs.speakr.recorder
 
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
+import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
 import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -51,11 +52,14 @@ class SpeakrApi(private val serverUrl: String, private val token: String) {
             val body = it.body?.string() ?: ""
             if (it.code == 401) throw SpeakrException("Invalid or expired token")
             if (!it.isSuccessful) throw SpeakrException("Server error ${it.code}")
-            return json.decodeFromString(body)
+            // Speakr wraps the list: {"tags": [...]}. Accept both shapes.
+            val obj = json.parseToJsonElement(body).jsonObjectSafe()
+            val arr = obj?.get("tags")?.toString() ?: body
+            return json.decodeFromString(arr)
         }
     }
 
-    /** Upload a recording with optional tag ids. Returns true on 202. */
+    /** Upload a recording with optional tag ids. Returns true on 2xx. */
     @Throws(IOException::class, SpeakrException::class)
     fun upload(file: File, tagIds: List<Long>): Boolean {
         val mime = when {
