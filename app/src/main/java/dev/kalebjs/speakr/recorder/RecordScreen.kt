@@ -78,16 +78,22 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
         }
     }
 
-    // Live level history for the waveform (one bar per sample, latest on the right).
+    // Live level history for the waveform. Append EVERY posted sample
     val levels = remember { mutableStateListOf<Float>() }
-    LaunchedEffect(amplitude, recording, paused) {
-        if (recording && !paused) {
-            val norm = sqrt((amplitude / 32767f).coerceIn(0f, 1f)).coerceAtLeast(0.04f)
-            levels.add(norm)
-            if (levels.size > 48) levels.removeAt(0)
-        } else if (!recording) {
-            levels.clear()
+    DisposableEffect(recording, paused) {
+        val observer = androidx.lifecycle.Observer<Int> { amp ->
+            if (recording && !paused) {
+                val norm = sqrt((amp / 32767f).coerceIn(0f, 1f)).coerceAtLeast(0.06f)
+                levels.add(norm)
+                while (levels.size > 48) levels.removeAt(0)
+            }
         }
+        App.amplitude.observeForever(observer)
+        onDispose { App.amplitude.removeObserver(observer) }
+    }
+    // Clear bars only when the recording is fully consumed (new session).
+    LaunchedEffect(recording) {
+        if (!recording && pendingPath == null) levels.clear()
     }
 
     Surface(modifier = Modifier.fillMaxSize()) {
@@ -348,7 +354,7 @@ private fun LiveWaveform(levels: List<Float>, active: Boolean) {
             levels.forEachIndexed { i, v ->
                 val slot = start + i
                 val x = slot * (barW + gap)
-                val h = (size.height * v).coerceAtLeast(4.dp.toPx())
+                val h = (size.height * v).coerceAtLeast(6.dp.toPx())
                 drawRoundRect(
                     color = barColor,
                     topLeft = Offset(x, (size.height - h) / 2),
@@ -395,21 +401,9 @@ private fun RecordButton(recording: Boolean, paused: Boolean, onClick: () -> Uni
                     .size(24.dp)
                     .background(MaterialTheme.colorScheme.onError, RoundedCornerShape(5.dp))
             )
-            // Paused: two white bars (play-ish) to invite resume
-            paused -> Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(
-                    Modifier
-                        .size(12.dp, 30.dp)
-                        .background(MaterialTheme.colorScheme.onError, RoundedCornerShape(4.dp))
-                )
-                Box(
-                    Modifier
-                        .size(12.dp, 30.dp)
-                        .background(MaterialTheme.colorScheme.onError, RoundedCornerShape(4.dp))
-                )
-            }
-            // Idle: white circle
-            else -> Box(
+            // Paused: revert to the original record-style circle; the text
+            // underneath ("Paused — tap to resume") carries the state.
+            paused || (!recording) -> Box(
                 Modifier
                     .size(34.dp)
                     .background(MaterialTheme.colorScheme.onPrimary, CircleShape)
