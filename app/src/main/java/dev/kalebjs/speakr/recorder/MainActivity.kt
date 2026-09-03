@@ -24,6 +24,7 @@ class MainViewModel : ViewModel() {
     var testResult = mutableStateOf<String?>(null)
     var testError = mutableStateOf<String?>(null)
     var tagsLoading = mutableStateOf(false)
+    var uploadingPath = mutableStateOf<String?>(null)
 
     fun testConnection(url: String, token: String) {
         testing.value = true
@@ -61,20 +62,35 @@ class MainViewModel : ViewModel() {
     }
 
     fun submit(path: String, tagIds: List<Long>) {
-        val existing = App.loadQueue().firstOrNull { it.path == path }
-        if (existing != null) {
-            App.updateQueueEntry(existing.copy(tagIds = tagIds))
-        } else {
-            App.enqueueUpload(
-                PendingUpload(
-                    path = path,
-                    tagIds = tagIds,
-                    createdAt = System.currentTimeMillis()
-                )
-            )
+        if (uploadingPath.value != null) return
+        uploadingPath.value = path
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Attach tags to the queued entry (or create one), then send inline
+                // for immediate feedback. Queue + backoff still covers retries.
+                val entry = App.loadQueue().firstOrNull { it.path == path }
+                if (entry != null) {
+                    App.updateQueueEntry(entry.copy(tagIds = tagIds))
+                } else {
+                    App.enqueueIfAbsent(
+                        PendingUpload(path = path, tagIds = tagIds, createdAt = System.currentTimeMillis())
+                    )
+                }
+                try {
+                    if (!App.isConfigured) throw SpeakrException("Not configured")
+                    SpeakrApi(App.serverUrl, App.apiToken).upload(File(path), tagIds)
+                    App.removeQueued(path)
+                    File(path).delete()
+                    App.successFlash.postValue(true)
+                } catch (e: Exception) {
+                    App.toast("Upload failed — will retry automatically")
+                    UploadWorker.kick()
+                }
+            } finally {
+                uploadingPath.value = null
+                App.recordingFilePath.postValue(null)
+            }
         }
-        UploadWorker.kick()
-        App.recordingFilePath.postValue(null)
     }
 
     fun discard(path: String) {

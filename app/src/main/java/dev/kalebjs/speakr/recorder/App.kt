@@ -30,6 +30,7 @@ object App {
         private set
 
     val recording = MutableLiveData(false)
+    val paused = MutableLiveData(false)
     private val _elapsed = MutableLiveData(0L)
     val elapsed: LiveData<Long> = _elapsed
     private val _amplitude = MutableLiveData(0)
@@ -37,6 +38,7 @@ object App {
     val recordingFilePath = MutableLiveData<String?>(null)
     val pendingCount = MutableLiveData(0)
     val lastMessage = MutableLiveData<String?>(null)
+    val successFlash = MutableLiveData(false)
     val tags = MutableLiveData<List<Tag>>(emptyList())
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -111,6 +113,16 @@ object App {
         val q = loadQueue()
         q.removeAll { it.path == path }
         saveQueue(q)
+    }
+
+    /** Queue only if this exact file isn't already queued (idempotent finalize). */
+    @Synchronized
+    fun enqueueIfAbsent(p: PendingUpload) {
+        val q = loadQueue()
+        if (q.none { it.path == p.path }) {
+            q.add(p)
+            saveQueue(q)
+        }
     }
 
     private val tagsCacheFile: File
