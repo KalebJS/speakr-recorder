@@ -42,6 +42,7 @@ class RecorderService : Service() {
     private var outputFile: File? = null
     private var captureThread: Thread? = null
     private var tickTimer: Timer? = null
+    private var transcriber: LiveTranscriber? = null
     private var elapsedSeconds = 0L
     private var totalSamples = 0L
 
@@ -132,6 +133,9 @@ class RecorderService : Service() {
                 AudioFormat.ENCODING_PCM_16BIT,
                 minBuf * 4
             )
+            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
+                throw IllegalStateException("AudioRecord init failed")
+            }
 
             val format = MediaFormat.createAudioFormat("audio/mp4a-latm", sampleRate, 1).apply {
                 setInteger(MediaFormat.KEY_AAC_PROFILE, MediaCodecInfo.CodecProfileLevel.AACObjectLC)
@@ -144,15 +148,26 @@ class RecorderService : Service() {
             }
             muxer = MediaMuxer(file.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
 
+            // Transcription is best-effort: it starts AFTER the capture path is
+            // up, and any failure here must not take the recording down.
+            transcriber = LiveTranscriber(this, sampleRate)
+            transcriber?.start()
+
             audioRecord?.startRecording()
+            if (audioRecord?.recordingState != AudioRecord.RECORDSTATE_RECORDING) {
+                throw IllegalStateException("AudioRecord.startRecording failed")
+            }
             state = State.RECORDING
             App.paused.postValue(false)
             elapsedSeconds = 0L
             App.resetClock()
             App.onRecordingStarted(file.absolutePath)
+            App.onTranscription("")
             startTickTimer()
             captureThread = Thread { captureLoop() }.apply { start() }
         } catch (e: Exception) {
+            try { transcriber?.stop() } catch (_: Exception) {}
+            transcriber = null
             cleanupMedia(keepFile = false)
             App.toast("Could not start recorder (mic busy?)")
             state = State.IDLE
@@ -163,6 +178,7 @@ class RecorderService : Service() {
     private fun pauseCapture() {
         if (state != State.RECORDING) return
         try { audioRecord?.stop() } catch (_: Exception) {}
+        transcriber?.pause()
         state = State.PAUSED
         App.paused.postValue(true)
         notifyForeground("Paused — tap ▲ to review")
@@ -171,6 +187,7 @@ class RecorderService : Service() {
     private fun resumeCapture() {
         if (state != State.PAUSED) return
         try { audioRecord?.startRecording() } catch (_: Exception) {}
+        transcriber?.resume()
         state = State.RECORDING
         App.paused.postValue(false)
         notifyForeground("Recording…")
@@ -197,6 +214,9 @@ class RecorderService : Service() {
                         if (inIdx >= 0) {
                             val read = rec.read(pcm, 0, pcm.size)
                             if (read > 0) {
+                                // Tee the SAME mic samples to the live
+                                // transcriber before the encode step.
+                                pcmTee(pcm, read)
                                 val inBuf = enc.getInputBuffer(inIdx)!!
                                 inBuf.clear()
                                 inBuf.asShortBuffer().put(pcm, 0, read)
@@ -313,10 +333,20 @@ class RecorderService : Service() {
 
     @Volatile private var abortFlag = false
 
+    /** Feed the read PCM chunk to the live transcriber (never throws). */
+    private fun pcmTee(pcm: ShortArray, sampleCount: Int) {
+        val t = transcriber ?: return
+        try {
+            t.writePcm(pcm, sampleCount)
+        } catch (_: Exception) {}
+    }
+
     private fun cleanupMedia(keepFile: Boolean) {
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioRecord?.release() } catch (_: Exception) {}
         audioRecord = null
+        try { transcriber?.stop() } catch (_: Exception) {}
+        transcriber = null
         try { encoder?.stop() } catch (_: Exception) {}
         try { encoder?.release() } catch (_: Exception) {}
         encoder = null

@@ -18,6 +18,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -50,6 +52,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     val elapsed by App.elapsed.observeAsState(0L)
     val amplitude by App.amplitude.observeAsState(0)
     val level by App.level.observeAsState(0.0)
+    val transcript by App.transcript.observeAsState("")
     val pendingPath by App.recordingFilePath.observeAsState()
     val pendingCount by App.pendingCount.observeAsState(0)
     val message by App.lastMessage.observeAsState()
@@ -135,6 +138,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                 paused = paused,
                 elapsed = elapsed,
                 levels = levels,
+                transcript = transcript,
                 pendingPath = pendingPath,
                 pendingCount = pendingCount,
                 onStartRecording = {
@@ -461,6 +465,7 @@ private fun MainLayout(
     paused: Boolean,
     elapsed: Long,
     levels: List<Float>,
+    transcript: String,
     pendingPath: String?,
     pendingCount: Int,
     onStartRecording: () -> Unit,
@@ -515,6 +520,10 @@ private fun MainLayout(
             }
             Spacer(Modifier.height(32.dp))
             LiveWaveform(levels = levels, active = recording && !paused)
+            LiveCaption(
+                transcript = transcript,
+                visible = recording && !paused
+            )
             Spacer(Modifier.height(48.dp))
             RecordButton(
                 recording = recording && !paused,
@@ -597,6 +606,57 @@ private fun LiveWaveform(levels: List<Float>, active: Boolean) {
                     topLeft = Offset(x, (size.height - h) / 2),
                     size = Size(barW, h),
                     cornerRadius = CornerRadius(barW / 2)
+                )
+            }
+        }
+    }
+}
+
+/** Words shown in the live caption; older words are clipped off. */
+private const val LIVE_CAPTION_WORDS = 14
+
+/**
+ * Live transcription caption between the waveform and the record button: the
+ * newest ~14 words of the rolling transcript, newest at full opacity and older
+ * words progressively faded (1.0 → 0.55 → 0.3 → 0.16), like a live caption.
+ * Collapses to nothing when idle or when transcription is unavailable.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun LiveCaption(transcript: String, visible: Boolean) {
+    val words = remember(transcript) {
+        transcript.trim().split(Regex("\\s+")).filter { it.isNotEmpty() }
+    }
+    AnimatedVisibility(
+        visible = visible && words.isNotEmpty(),
+        enter = fadeIn(),
+        exit = fadeOut()
+    ) {
+        FlowRow(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 8.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            val start = (words.size - LIVE_CAPTION_WORDS).coerceAtLeast(0)
+            val color = MaterialTheme.colorScheme.onSurfaceVariant
+            val style = MaterialTheme.typography.bodyLarge
+            for (i in start until words.size) {
+                val age = words.size - 1 - i // 0 = newest word
+                val alpha = when {
+                    age == 0 -> 1f
+                    age == 1 -> 0.55f
+                    age == 2 -> 0.3f
+                    else -> 0.16f
+                }
+                Text(
+                    text = words[i],
+                    style = style,
+                    color = color,
+                    modifier = Modifier
+                        .alpha(alpha)
+                        .padding(horizontal = 3.dp)
                 )
             }
         }

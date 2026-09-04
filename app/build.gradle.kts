@@ -22,6 +22,17 @@ android {
             isMinifyEnabled = false
         }
     }
+    signingConfigs {
+        // Project-pinned debug keystore: same signature on every machine/build,
+        // so updates install over previous versions (a regenerated ~/.android
+        // debug key breaks upgrades with "App not installed").
+        getByName("debug") {
+            storeFile = rootProject.file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17

@@ -44,6 +44,8 @@ object App {
     val amplitude: LiveData<Int> = _amplitude
     private val _level = MutableLiveData(0.0)
     val level: LiveData<Double> = _level
+    private val _transcript = MutableLiveData("")
+    val transcript: LiveData<String> = _transcript
     val recordingFilePath = MutableLiveData<String?>(null)
     val pendingCount = MutableLiveData(0)
     val lastMessage = MutableLiveData<String?>(null)
@@ -208,6 +210,9 @@ object App {
     fun onAmplitude(peak: Int) = _amplitude.postValue(peak)
 
     fun onLevel(rms: Double) = _level.postValue(rms)
+
+    /** Rolling live-transcription text (finals + current partial) from the service. */
+    fun onTranscription(text: String) = _transcript.postValue(text)
 
     /**
      * Failsafe: copy a recording into the public Downloads folder (MediaStore,

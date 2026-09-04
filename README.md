@@ -9,6 +9,7 @@ One button. Record. Pick a tag. It lands in your Speakr, transcribed and summari
 - **One-tap recording** — big record button, live elapsed timer, nothing else
 - **Background recording** — a foreground service keeps capture running with the screen off or while you use other apps (persistent notification with a Stop action)
 - **Clean capture** — AAC-LC, 48 kHz, 128 kbps mono in MPEG-4: high voice quality, small files, and mono keeps Speakr's speaker diarization accurate
+- **Live transcription captions** — while recording, the newest few words appear on-screen as a fading live caption, recognized entirely on-device (nothing leaves the phone)
 - **Pre-existing tags** — your Speakr tags are fetched and shown as color-coded chips; attach one (or several) before sending
 - **Offline queue** — recordings are saved locally first. If your server is unreachable, uploads retry automatically with backoff; a "pending" chip shows the queue count
 - **Private by design** — your server URL and API token are stored in EncryptedSharedPreferences on-device and sent nowhere but your own instance
