@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.livedata.observeAsState
+import dev.kalebjs.speakr.recorder.SelfUpdate
 import java.io.File
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -62,6 +63,13 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     val uploading = vm.uploadingPath.value != null
     val onMetered = vm.onMetered.value
     val tags by App.tags.observeAsState(emptyList())
+    // Self-update state: banner info, download/install phase + progress,
+    // unknown-source explainer, one-shot success toast.
+    val updateInfo by SelfUpdate.update.observeAsState()
+    val updatePhase by SelfUpdate.phase.observeAsState(UpdatePhase.DONE)
+    val updateProgress by SelfUpdate.progress.observeAsState(0)
+    val needsUnknownSource by SelfUpdate.needsUnknownSource.observeAsState(false)
+    val installSuccess by SelfUpdate.installSuccess.observeAsState(false)
 
     val snackbar = remember { SnackbarHostState() }
     LaunchedEffect(message) {
@@ -141,6 +149,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                 transcript = transcript,
                 pendingPath = pendingPath,
                 pendingCount = pendingCount,
+                updateInfo = updateInfo,
                 onStartRecording = {
                     when {
                         pendingPath != null -> {
@@ -353,6 +362,85 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
             }
         )
     }
+
+    // Self-update: download/install progress overlay (same style as the
+    // upload overlay), unknown-source explainer dialog, success flash.
+    if (updatePhase == UpdatePhase.DOWNLOADING || updatePhase == UpdatePhase.INSTALLING) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .alpha(0.55f)
+                .background(MaterialTheme.colorScheme.scrim)
+                .clickable(enabled = false, onClick = {}),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(28.dp))
+                    .background(MaterialTheme.colorScheme.surfaceColorAtElevation(3.dp))
+                    .padding(horizontal = 40.dp, vertical = 28.dp)
+            ) {
+                CircularProgressIndicator(
+                    progress = { updateProgress / 100f },
+                    modifier = Modifier.size(44.dp),
+                    strokeWidth = 4.dp
+                )
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    when (updatePhase) {
+                        UpdatePhase.DOWNLOADING -> "Downloading update… $updateProgress%"
+                        else -> "Installing update…"
+                    },
+                    style = MaterialTheme.typography.titleMedium
+                )
+            }
+        }
+    }
+
+    // Android blocked the install: this sideloaded app needs the per-app
+    // "install unknown apps" grant before the system confirm dialog appears.
+    if (needsUnknownSource) {
+        AlertDialog(
+            onDismissRequest = { SelfUpdate.clearUnknownSourceFlag() },
+            title = { Text("Allow the update to install") },
+            text = {
+                Text(
+                    "Android blocks apps from installing other apps by default. " +
+                        "To allow it:\n\n" +
+                        "Settings → Apps → Speakr Recorder → Install unknown apps → " +
+                        "Allow from this source.\n\n" +
+                        "Then tap Update again — the download is kept and the " +
+                        "install confirm dialog will appear."
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    SelfUpdate.clearUnknownSourceFlag()
+                    runCatching {
+                        val intent = Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES)
+                            .setData(android.net.Uri.parse("package:${App.context.packageName}"))
+                        App.context.startActivity(intent)
+                    }
+                }) {
+                    Text("Open settings")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { SelfUpdate.clearUnknownSourceFlag() }) {
+                    Text("Not now")
+                }
+            }
+        )
+    }
+
+    // One-shot install-success confirmation.
+    LaunchedEffect(installSuccess) {
+        if (installSuccess) {
+            App.toast("Update installed")
+            SelfUpdate.clearInstallSuccess()
+        }
+    }
 }
 
 /** True when any queued entry is parked for Wi-Fi. */
@@ -468,6 +556,7 @@ private fun MainLayout(
     transcript: String,
     pendingPath: String?,
     pendingCount: Int,
+    updateInfo: UpdateInfo?,
     onStartRecording: () -> Unit,
     onPrimaryButton: () -> Unit,
     onStopForSend: () -> Unit,
@@ -523,6 +612,14 @@ private fun MainLayout(
             LiveCaption(
                 transcript = transcript,
                 visible = recording && !paused
+            )
+            UpdateBannerCard(
+                update = updateInfo,
+                onUpdate = {
+                    App.toast("Downloading update…")
+                    SelfUpdate.downloadAndInstall()
+                },
+                onDismiss = { SelfUpdate.dismiss() }
             )
             Spacer(Modifier.height(48.dp))
             RecordButton(
@@ -658,6 +755,47 @@ private fun LiveCaption(transcript: String, visible: Boolean) {
                         .alpha(alpha)
                         .padding(horizontal = 3.dp)
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Subtle Material 3 banner card for an available GitHub release: tag label,
+ * Update button, and an X to dismiss for the current session. Rendered
+ * between the live caption and the record button.
+ */
+@Composable
+private fun UpdateBannerCard(
+    update: UpdateInfo?,
+    onUpdate: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    AnimatedVisibility(
+        visible = update != null,
+        enter = fadeIn() + scaleIn(initialScale = 0.9f),
+        exit = fadeOut()
+    ) {
+        Row(
+            modifier = Modifier
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(MaterialTheme.colorScheme.secondaryContainer)
+                .padding(horizontal = 14.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Update available — ${update?.tag?.removePrefix("v") ?: ""}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSecondaryContainer,
+                modifier = Modifier.weight(1f)
+            )
+            TextButton(onClick = onUpdate) {
+                Text("Update")
+            }
+            TextButton(onClick = onDismiss) {
+                Text("✕")
             }
         }
     }

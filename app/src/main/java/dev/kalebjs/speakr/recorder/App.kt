@@ -87,6 +87,11 @@ object App {
         get() = prefs.getString("api_token", "") ?: ""
         set(v) = prefs.edit().putString("api_token", v).apply()
 
+    /** GitHub self-update auto-check (default ON). */
+    var autoUpdate: Boolean
+        get() = prefs.getBoolean("auto_update", true)
+        set(v) = prefs.edit().putBoolean("auto_update", v).apply()
+
     val isConfigured: Boolean get() = serverUrl.isNotEmpty() && apiToken.isNotEmpty()
 
     private val queueFile: File

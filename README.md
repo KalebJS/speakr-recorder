@@ -14,6 +14,7 @@ One button. Record. Pick a tag. It lands in your Speakr, transcribed and summari
 - **Offline queue** — recordings are saved locally first. If your server is unreachable, uploads retry automatically with backoff; a "pending" chip shows the queue count
 - **Private by design** — your server URL and API token are stored in EncryptedSharedPreferences on-device and sent nowhere but your own instance
 - **Bring your own server** — set your Speakr URL and API token on first launch (Speakr → Settings → API Tokens)
+- **Self-update from GitHub Releases with optional auto-check** — an "Update available" card appears on the record screen when a newer release is published; tapping Update downloads the APK and installs it (the auto-check can be turned off on the setup screen)
 
 ## Not supported: phone-call recording
 

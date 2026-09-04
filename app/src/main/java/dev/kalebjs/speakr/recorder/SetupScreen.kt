@@ -87,6 +87,25 @@ fun SetupScreen(vm: MainViewModel, onDone: () -> Unit, onCancel: () -> Unit) {
             }
         }
 
+        // GitHub self-update auto-check (default ON, persisted immediately).
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Auto-check for updates", style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "Check GitHub Releases for a newer version of this app when it opens.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Switch(
+                checked = App.autoUpdate,
+                onCheckedChange = { App.autoUpdate = it }
+            )
+        }
+
         Spacer(Modifier.height(8.dp))
 
         Button(

@@ -19,6 +19,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** Interval between foreground update checks (~6 hours). */
+private const val UPDATE_CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000
+
 class MainViewModel : ViewModel() {
     var testing = mutableStateOf(false)
     var testResult = mutableStateOf<String?>(null)
@@ -199,6 +202,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
         App.init(application)
+        SelfUpdate.registerStatusReceiver(this)
         setContent {
             SpeakrTheme {
                 Root()
@@ -211,7 +215,18 @@ class MainActivity : ComponentActivity() {
         vm.refreshMetered()
         UploadWorker.kick()
         vm.refreshTags()
+        if (App.autoUpdate && System.currentTimeMillis() - lastUpdateCheck >= UPDATE_CHECK_INTERVAL_MS) {
+            lastUpdateCheck = System.currentTimeMillis()
+            SelfUpdate.check()
+        }
     }
+
+    override fun onDestroy() {
+        SelfUpdate.unregisterStatusReceiver(this)
+        super.onDestroy()
+    }
+
+    private var lastUpdateCheck = 0L
 
     private fun startRecordingService() {
         ContextCompat.startForegroundService(
