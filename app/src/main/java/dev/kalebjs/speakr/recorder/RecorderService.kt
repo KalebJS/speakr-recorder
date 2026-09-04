@@ -281,20 +281,30 @@ class RecorderService : Service() {
             } else {
                 outputFile?.let { f ->
                     if (f.length() > 0) {
-                        App.enqueueIfAbsent(
-                            PendingUpload(
-                                path = f.absolutePath,
-                                tagIds = emptyList(),
-                                createdAt = System.currentTimeMillis()
+                        if (!App.sendArmed) {
+                            // Standalone stop (notification Stop / button): park
+                            // the recording in the visible queue for review —
+                            // the worker must not auto-upload it (double-send).
+                            App.enqueueIfAbsent(
+                                PendingUpload(
+                                    path = f.absolutePath,
+                                    tagIds = emptyList(),
+                                    createdAt = System.currentTimeMillis(),
+                                    holdForReview = true
+                                )
                             )
-                        )
-                        App.toast("Saved — review and send")
+                            App.toast("Saved — open ▲ to review and send")
+                        }
+                        // sendArmed: the drawer's submit() is already the sender.
                     } else {
                         f.delete()
                         App.toast("Recording failed — nothing saved")
                     }
                 }
-                UploadWorker.kick()
+                if (!App.sendArmed) {
+                    UploadWorker.kick()
+                }
+                App.sendArmed = false
             }
             stopTickTimer()
             stopSelf()

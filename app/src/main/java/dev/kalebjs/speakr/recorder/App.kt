@@ -24,7 +24,11 @@ data class PendingUpload(
     val tagIds: List<Long>,
     val createdAt: Long,
     val attempts: Int = 0,
-    val lastAttemptAt: Long = 0
+    val lastAttemptAt: Long = 0,
+    /** Wait for an unmetered network before this upload is allowed to run. */
+    val wifiOnly: Boolean = false,
+    /** Parked for user review (standalone stop) — never auto-uploaded. */
+    val holdForReview: Boolean = false
 )
 
 /** Process-wide singleton state bus between UI, service, and queue. */
@@ -47,6 +51,8 @@ object App {
     /** Failsafe alert: shown once when an upload permanently fails. */
     val uploadFailure = MutableLiveData<String?>(null)
     val tags = MutableLiveData<List<Tag>>(emptyList())
+    /** Non-null while the "mobile data" send prompt is on screen. */
+    val sendPrompt = MutableLiveData<String?>(null)
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -65,6 +71,10 @@ object App {
         context = app
         loadTagsCache()
         refreshPendingCount()
+        NetworkMonitor.watchUnmetered(app) {
+            wifiWaiting = false
+            UploadWorker.kick()
+        }
     }
 
     var serverUrl: String
@@ -131,6 +141,39 @@ object App {
             saveQueue(q)
         }
     }
+
+    // ------------------------------------------------------------------
+    // Send arbitration: exactly one sender may own a path at a time.
+    // Prevents the recorder finalize's UploadWorker.kick() racing the
+    // drawer's inline submit() and uploading the file twice.
+    // ------------------------------------------------------------------
+
+    /** Paths with an upload attempt in flight (inline submit or worker). */
+    private val inFlight = mutableSetOf<String>()
+
+    @Synchronized
+    fun claimSend(path: String): Boolean =
+        if (path in inFlight) false else { inFlight.add(path); true }
+
+    @Synchronized
+    fun releaseSend(path: String) {
+        inFlight.remove(path)
+    }
+
+    /**
+     * Armed by the drawer just before ACTION_STOP when the user chose
+     * "Finish & send": the finalize path must skip its own kick so the
+     * drawer's submit remains the only sender.
+     */
+    @Volatile
+    var sendArmed: Boolean = false
+
+    /**
+     * True while at least one queued recording is parked for Wi-Fi.
+     * Cleared when the network callback (or a manual send) drains it.
+     */
+    @Volatile
+    var wifiWaiting: Boolean = false
 
     private val tagsCacheFile: File
         get() = File(context.filesDir, "tags_cache.json")

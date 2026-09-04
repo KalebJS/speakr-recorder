@@ -6,4 +6,4 @@ local.properties
 .DS_Store
 captures/
 .externalNativeBuild/
-.cxx/
+.cxx/.kotlin/

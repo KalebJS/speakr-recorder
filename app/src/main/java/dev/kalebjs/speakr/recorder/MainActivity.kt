@@ -25,6 +25,21 @@ class MainViewModel : ViewModel() {
     var testError = mutableStateOf<String?>(null)
     var tagsLoading = mutableStateOf(false)
     var uploadingPath = mutableStateOf<String?>(null)
+    /** Live "on mobile data" flag, observed by the send prompt. */
+    var onMetered = mutableStateOf(false)
+
+    fun refreshMetered() {
+        onMetered.value = NetworkMonitor.isMetered(App.context)
+    }
+
+    /** Manual send from the queue screen: prompt on metered, else upload. */
+    fun sendFromQueue(path: String) {
+        if (File(path).exists()) {
+            submit(path, App.loadQueue().firstOrNull { it.path == path }?.tagIds ?: emptyList())
+        } else {
+            App.removeQueued(path)
+        }
+    }
 
     fun testConnection(url: String, token: String) {
         testing.value = true
@@ -61,8 +76,65 @@ class MainViewModel : ViewModel() {
         }
     }
 
-    fun submit(path: String, tagIds: List<Long>) {
+    fun submit(path: String, tagIds: List<Long>, forceNow: Boolean = false) {
         if (uploadingPath.value != null) return
+        // Any submit settles the drawer's armed send: the finalize path has
+        // either already run (paused flow) or never will.
+        App.sendArmed = false
+        // Metered-network gate: on mobile data, ask before spending it.
+        if (!forceNow && NetworkMonitor.isMetered(App.context)) {
+            pendingSend = PendingSend(path, tagIds)
+            App.sendPrompt.postValue(path)
+            return
+        }
+        doSubmit(path, tagIds)
+    }
+
+    private var pendingSend: PendingSend? = null
+
+    private data class PendingSend(val path: String, val tagIds: List<Long>)
+
+    /** Prompt dismissed without choosing: the recording stays reviewable. */
+    fun cancelPrompt() {
+        pendingSend = null
+        App.sendPrompt.postValue(null)
+    }
+
+    /** User chose "Upload now" on mobile data. */
+    fun confirmSendNow() {
+        val p = pendingSend ?: return
+        pendingSend = null
+        App.sendPrompt.postValue(null)
+        doSubmit(p.path, p.tagIds)
+    }
+
+    /** User chose "Wait for Wi-Fi": re-queue with the wifiOnly flag. */
+    fun waitForWifi() {
+        val p = pendingSend ?: return
+        pendingSend = null
+        App.sendPrompt.postValue(null)
+        App.wifiWaiting = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val entry = App.loadQueue().firstOrNull { it.path == p.path }
+            if (entry != null) {
+                App.updateQueueEntry(entry.copy(tagIds = p.tagIds, wifiOnly = true, holdForReview = false))
+            } else {
+                App.enqueueUpload(
+                    PendingUpload(path = p.path, tagIds = p.tagIds, wifiOnly = true, createdAt = System.currentTimeMillis())
+                )
+            }
+            App.toast("Waiting for Wi-Fi")
+            App.recordingFilePath.postValue(null)
+        }
+    }
+
+    private fun doSubmit(path: String, tagIds: List<Long>) {
+        if (uploadingPath.value != null) return
+        // One sender at a time: the worker may already own this file.
+        if (!App.claimSend(path)) {
+            App.toast("Already sending…")
+            return
+        }
         uploadingPath.value = path
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -70,7 +142,7 @@ class MainViewModel : ViewModel() {
                 // for immediate feedback. Queue + backoff still covers retries.
                 val entry = App.loadQueue().firstOrNull { it.path == path }
                 if (entry != null) {
-                    App.updateQueueEntry(entry.copy(tagIds = tagIds))
+                    App.updateQueueEntry(entry.copy(tagIds = tagIds, wifiOnly = false, holdForReview = false))
                 } else {
                     App.enqueueIfAbsent(
                         PendingUpload(path = path, tagIds = tagIds, createdAt = System.currentTimeMillis())
@@ -97,6 +169,7 @@ class MainViewModel : ViewModel() {
                     UploadWorker.kick()
                 }
             } finally {
+                App.releaseSend(path)
                 uploadingPath.value = null
                 App.recordingFilePath.postValue(null)
             }
@@ -135,6 +208,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        vm.refreshMetered()
         UploadWorker.kick()
         vm.refreshTags()
     }

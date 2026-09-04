@@ -9,7 +9,8 @@ import java.io.File
 /**
  * Drains the upload queue in the background. Failed uploads stay queued and
  * are retried with capped exponential backoff whenever the app or a finished
- * recording kicks the worker.
+ * recording kicks the worker. Entries marked wifiOnly are held until the
+ * active network is unmetered (network callback wakes the worker).
  */
 object UploadWorker {
 
@@ -45,6 +46,16 @@ object UploadWorker {
                 val backoffMs = minOf(60_000L * (1L shl minOf(item.attempts, 5)), 30L * 60_000L)
                 if (now - item.lastAttemptAt < backoffMs) continue
             }
+            // Metered-network gate: hold wifiOnly entries until Wi-Fi.
+            if (item.wifiOnly && NetworkMonitor.isMetered(App.context)) continue
+            // Held for review: only an explicit send (drawer/queue screen)
+            // releases it. A failed inline attempt (attempts > 0) re-enters
+            // the normal retry path.
+            if (item.holdForReview && item.attempts == 0) continue
+
+            // One sender at a time: skip if the inline submit already owns
+            // this file (or vice versa). Prevents double uploads.
+            if (!App.claimSend(item.path)) continue
             try {
                 api.upload(file, item.tagIds)
                 App.removeQueued(item.path)
@@ -73,6 +84,8 @@ object UploadWorker {
                     e.message?.contains("Unable to resolve", ignoreCase = true) == true ||
                     e.message?.contains("Failed to connect", ignoreCase = true) == true
                 ) break
+            } finally {
+                App.releaseSend(item.path)
             }
         }
     }

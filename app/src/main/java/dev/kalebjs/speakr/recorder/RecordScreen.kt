@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.compose.runtime.livedata.observeAsState
+import java.io.File
 import kotlin.math.min
 import kotlin.math.sqrt
 
@@ -54,7 +55,9 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     val message by App.lastMessage.observeAsState()
     val successFlash by App.successFlash.observeAsState(false)
     val uploadFailure by App.uploadFailure.observeAsState()
+    val sendPrompt by App.sendPrompt.observeAsState()
     val uploading = vm.uploadingPath.value != null
+    val onMetered = vm.onMetered.value
     val tags by App.tags.observeAsState(emptyList())
 
     val snackbar = remember { SnackbarHostState() }
@@ -66,6 +69,7 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     }
 
     var drawerOpen by remember { mutableStateOf(false) }
+    var queueOpen by remember { mutableStateOf(false) }
     var submitAfterStop by remember { mutableStateOf<List<Long>?>(null) }
 
     // Open the submission drawer automatically when a recording finishes.
@@ -78,6 +82,17 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
             submitAfterStop = null
             if (path != null && ids != null) vm.submit(path, ids)
         }
+    }
+
+    // Re-open the drawer for a send that was parked ("Wait for Wi-Fi") so
+    // the recording is never silently lost — it's still the review target.
+    LaunchedEffect(pendingPath, pendingCount) {
+        if (pendingPath == null && queueHasWifiOnly()) drawerOpen = false
+    }
+
+    // The moment the network becomes unmetered, drain anything parked for Wi-Fi.
+    LaunchedEffect(onMetered) {
+        if (!onMetered && queueHasWifiOnly()) UploadWorker.kick()
     }
 
     // Auto-dismiss the success flash.
@@ -165,12 +180,21 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                     )
                 },
                 onOpenSettings = onOpenSettings,
-                onOpenDrawer = { drawerOpen = true }
+                onOpenDrawer = { drawerOpen = true },
+                onOpenQueue = { queueOpen = true }
             )
 
             SnackbarHost(
                 hostState = snackbar,
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 32.dp)
+            )
+        }
+
+        if (queueOpen) {
+            QueueScreen(
+                vm = vm,
+                onMetered = onMetered,
+                onBack = { queueOpen = false }
             )
         }
 
@@ -190,10 +214,12 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
                     onSubmit = { ids ->
                         pendingPath?.let { p ->
                             if (!recording) {
+                                App.sendArmed = true
                                 vm.submit(p, ids)
                             } else {
                                 // Paused: finalize the session, then auto-send
                                 // once the file is closed.
+                                App.sendArmed = true
                                 submitAfterStop = ids
                                 ContextCompat.startForegroundService(
                                     App.context,
@@ -283,6 +309,25 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
         }
     }
 
+    // Metered-network prompt: upload now on mobile data, or hold for Wi-Fi.
+    sendPrompt?.let { path ->
+        AlertDialog(
+            onDismissRequest = { vm.cancelPrompt() },
+            title = { Text("On mobile data") },
+            text = { Text("Uploading now will use your phone's data connection. Wait for Wi-Fi instead? The recording stays queued and sends automatically.") },
+            confirmButton = {
+                TextButton(onClick = { vm.confirmSendNow() }) {
+                    Text("Upload now")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { vm.waitForWifi() }) {
+                    Text("Wait for Wi-Fi")
+                }
+            }
+        )
+    }
+
     // Failsafe alert when an upload fails permanently (or first failure).
     uploadFailure?.let { msg ->
         AlertDialog(
@@ -306,6 +351,110 @@ fun RecordScreen(vm: MainViewModel, onOpenSettings: () -> Unit, onStartRecording
     }
 }
 
+/** True when any queued entry is parked for Wi-Fi. */
+private fun queueHasWifiOnly(): Boolean =
+    App.loadQueue().any { it.wifiOnly }
+
+@Composable
+private fun QueueScreen(vm: MainViewModel, onMetered: Boolean, onBack: () -> Unit) {
+    val pendingCount by App.pendingCount.observeAsState(0)
+    val message by App.lastMessage.observeAsState()
+    val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(message) {
+        message?.let {
+            snackbar.showSnackbar(it)
+            App.lastMessage.postValue(null)
+        }
+    }
+    // Reload on every count change; send-now/delete both change it.
+    val items = remember(pendingCount, onMetered) { App.loadQueue().toList() }
+
+    Surface(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextButton(onClick = onBack) { Text("← Back") }
+                Spacer(Modifier.weight(1f))
+                Text(
+                    if (onMetered) "On mobile data" else "On Wi-Fi",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Text(
+                "Upload queue",
+                style = MaterialTheme.typography.headlineSmall
+            )
+            if (items.isEmpty()) {
+                Spacer(Modifier.height(32.dp))
+                Text(
+                    "Nothing queued — recordings appear here until they're sent.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                items.forEach { item ->
+                    QueueItemCard(
+                        item = item,
+                        onMetered = onMetered,
+                        onSendNow = { vm.sendFromQueue(item.path) },
+                        onDelete = { vm.discard(item.path) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QueueItemCard(
+    item: PendingUpload,
+    onMetered: Boolean,
+    onSendNow: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val file = remember(item.path) { File(item.path) }
+    val sizeMb = if (file.exists()) file.length() / (1024.0 * 1024.0) else 0.0
+    val status = when {
+        item.wifiOnly && onMetered -> "Waiting for Wi-Fi"
+        item.attempts > 0 -> "Failed ${item.attempts}× — will retry"
+        item.holdForReview -> "Ready to review"
+        else -> "Queued"
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .padding(16.dp)
+    ) {
+        Text(
+            file.name,
+            style = MaterialTheme.typography.bodyLarge
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            "$status · %.1f MB".format(sizeMb),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = onSendNow) {
+                Text("Send now")
+            }
+            OutlinedButton(onClick = onDelete) {
+                Text("Delete", color = MaterialTheme.colorScheme.error)
+            }
+        }
+    }
+}
+
 @Composable
 private fun MainLayout(
     recording: Boolean,
@@ -318,7 +467,8 @@ private fun MainLayout(
     onPrimaryButton: () -> Unit,
     onStopForSend: () -> Unit,
     onOpenSettings: () -> Unit,
-    onOpenDrawer: () -> Unit
+    onOpenDrawer: () -> Unit,
+    onOpenQueue: () -> Unit
 ) {
     Column(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -332,7 +482,7 @@ private fun MainLayout(
         ) {
             if (pendingCount > 0) {
                 AssistChip(
-                    onClick = { UploadWorker.kick() },
+                    onClick = onOpenQueue,
                     label = { Text("$pendingCount pending") }
                 )
             } else {
@@ -377,6 +527,7 @@ private fun MainLayout(
                     recording && !paused -> "Recording — tap to pause"
                     recording && paused -> "Paused — tap to resume"
                     pendingPath != null -> "Tap ▲ to send, or resume"
+                    pendingCount > 0 -> "$pendingCount queued — tap to review"
                     else -> "Tap to record"
                 },
                 style = MaterialTheme.typography.bodyLarge,
